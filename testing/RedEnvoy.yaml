@@ -8,6 +8,6 @@ metadata:
 spec:
   containerImage: "nodered/node-red:latest-20"
   triggeredEventName: "CreateNodredPod"
-  triggeredDeleteEventName: "DeleteNoderedPod"
+  triggeredDeleteEventName: "DeleteNodredPod"
   containerPort: 1880
   ingressHost: "nodered.local"
