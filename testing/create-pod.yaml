@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Event
+metadata:
+  name: event-11
+  namespace: default
+reason: "CreateNodredPod"
+message: "nodered-7" # POD name or other relevant info
+involvedObject:
+  kind: RedEnvoy
+  name: redenvoy-setup
+  namespace: default
+  apiVersion: apps.abstractprism.com/v1
+type: Normal
+source:
+  component: "manual-trigger"

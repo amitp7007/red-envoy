@@ -1,0 +1,13 @@
+apiVersion: apps.abstractprism.com/v1
+kind: RedEnvoy
+metadata:
+  name: redenvoy-setup
+  namespace: default
+  labels:
+    app: redenvoy-setup
+spec:
+  containerImage: "nodered/node-red:latest-20"
+  triggeredEventName: "CreateNodredPod"
+  triggeredDeleteEventName: "DeleteNoderedPod"
+  containerPort: 1880
+  ingressHost: "nodered.local"

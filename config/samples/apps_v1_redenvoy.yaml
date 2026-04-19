@@ -1,0 +1,9 @@
+apiVersion: apps.abstractprism.com/v1
+kind: RedEnvoy
+metadata:
+  labels:
+    app.kubernetes.io/name: red-envoy
+    app.kubernetes.io/managed-by: kustomize
+  name: redenvoy-sample
+spec:
+  # TODO(user): Add fields here
