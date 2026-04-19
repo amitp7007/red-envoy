@@ -1,8 +1,8 @@
 # red-envoy
-// TODO(user): Add simple overview of use/purpose
+A simple k8s Operator for Node-Red
 
 ## Description
-// TODO(user): An in-depth paragraph about your project and overview of use
+This is a Kubernetes Operator that provisions and manages Node-RED instances on demand. It features a dynamic event-driven architecture that spins up webhook servers to listen for incoming requests for instance creation and deletion. Based on these events, the operator automatically orchestrates Node-RED pods, services, and ingresses, dynamically managing your Node-RED environments.
 
 ## Getting Started
 
@@ -132,4 +132,3 @@ distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
-
