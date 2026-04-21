@@ -554,6 +554,8 @@ func (r *RedEnvoyReconciler) deploymentForWebServer(app *redenvoy.RedEnvoy) *app
 	}
 }
 
+// serviceForWebServer returns a Service object for the webhook server
+
 func (r *RedEnvoyReconciler) serviceForWebServer(app *redenvoy.RedEnvoy) *corev1.Service {
 	labels := map[string]string{"app": app.Name, "component": "operator-webhook"}
 	return &corev1.Service{
