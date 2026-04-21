@@ -9,12 +9,12 @@ rules:
   resources:
   - events
   verbs:
+  - create
   - get
   - list
-  - watch
-  - create
-  - update
   - patch
+  - update
+  - watch
 - apiGroups:
   - ""
   resources:

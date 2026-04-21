@@ -24,7 +24,7 @@ import (
 	"os/exec"
 	"strings"
 
-	. "github.com/onsi/ginkgo/v2" 
+	. "github.com/onsi/ginkgo/v2"
 )
 
 const (

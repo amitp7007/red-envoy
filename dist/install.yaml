@@ -489,7 +489,7 @@ spec:
         - --health-probe-bind-address=:8081
         command:
         - /manager
-        image: abstractprism/redenvoy:0.0.1
+        image: ghcr.io/abstractprism007/abstractprism/redenvoy:0.0.1
         livenessProbe:
           httpGet:
             path: /healthz

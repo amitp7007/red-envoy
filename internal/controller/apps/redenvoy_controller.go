@@ -543,7 +543,7 @@ func (r *RedEnvoyReconciler) deploymentForWebServer(app *redenvoy.RedEnvoy) *app
 					Containers: []corev1.Container{
 						{
 							Name:            "webserver",
-							Image:           "red-envoy-webhook:latest", // The container image to build below
+							Image:           "ghcr.io/abstractprism007/abstractprism/red-envoy-webhook:0.0.1", // The container image to build below
 							ImagePullPolicy: corev1.PullIfNotPresent,
 							Ports:           []corev1.ContainerPort{{ContainerPort: 8080}},
 						},
@@ -586,6 +586,8 @@ func (r *RedEnvoyReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Named("apps-redenvoy").
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
+		Owns(&corev1.Pod{}).
+		Owns(&networkingv1.Ingress{}).
 		Watches(
 			&corev1.Event{},
 			//&source.Kind{Type: &corev1.Event{}},
