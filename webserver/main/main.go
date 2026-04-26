@@ -19,10 +19,18 @@ import (
 
 // WebhookRequest defines the expected JSON body from Postman
 type WebhookRequest struct {
-	PodName   string `json:"podName"`
-	Action    string `json:"action"`    // Expected to be "create" or "delete"
-	CRName    string `json:"crName"`    // The name of your RedEnvoy custom resource
-	Namespace string `json:"namespace"` // The namespace of your RedEnvoy custom resource
+	PodName   string            `json:"podName"`
+	Action    string            `json:"action"`    // Expected to be "create" or "delete"
+	CRName    string            `json:"crName"`    // The name of your RedEnvoy custom resource
+	Namespace string            `json:"namespace"` // The namespace of your RedEnvoy custom resource
+	Envs      map[string]string `json:"envs,omitempty"`
+}
+
+// EventPayload defines the structure of the message that will be sent in the event.
+// It will be marshalled into a JSON string.
+type EventPayload struct {
+	PodName string            `json:"podName"`
+	Envs    map[string]string `json:"envs,omitempty"`
 }
 
 func main() {
@@ -73,6 +81,18 @@ func main() {
 			return
 		}
 
+		// The message will now be a JSON payload containing the pod name and envs
+		payload := EventPayload{
+			PodName: reqData.PodName,
+			Envs:    reqData.Envs,
+		}
+		log.Printf("Received request to %s pod %s with envs: %v", reqData.Action, reqData.PodName, reqData.Envs)
+		messageBytes, err := json.Marshal(payload)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Failed to serialize event payload: %v", err), http.StatusInternalServerError)
+			return
+		}
+
 		// Construct the Kubernetes Event
 		event := &corev1.Event{
 			ObjectMeta: metav1.ObjectMeta{
@@ -86,7 +106,7 @@ func main() {
 				APIVersion: "apps.abstractprism.com/v1",
 			},
 			Reason:  reason,
-			Message: reqData.PodName, // Your operator uses the message as the Pod name
+			Message: string(messageBytes), // Your operator parses this JSON string
 			Type:    corev1.EventTypeNormal,
 			Source: corev1.EventSource{
 				Component: "RedEnvoyWebhook",

@@ -4,7 +4,7 @@ metadata:
   name: delete-pod-event-2
   namespace: default
 reason: "DeleteNoderedPod"
-message: "nodered-7" # POD name or other relevant info
+message: '{"podName": "nodered-7"}'
 involvedObject:
   kind: RedEnvoy
   name: redenvoy-setup

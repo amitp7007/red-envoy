@@ -4,7 +4,7 @@ metadata:
   name: event-11
   namespace: default
 reason: "CreateNodredPod"
-message: "nodered-7" # POD name or other relevant info
+message: '{"podName": "nodered-7", "envs": {"FOO": "BAR", "NODE_ENV": "production"}}'
 involvedObject:
   kind: RedEnvoy
   name: redenvoy-setup

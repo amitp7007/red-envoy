@@ -136,10 +136,21 @@ spec:
                 - type
                 x-kubernetes-list-type: map
               managedPods:
-                description: ManagedPods is the list of pod names that are currently
-                  being managed by this operator.
+                description: ManagedPods is the list of pod configurations that are
+                  currently being managed by this operator.
                 items:
-                  type: string
+                  description: PodConfig defines the configuration for a managed pod,
+                    including its name and environment variables.
+                  properties:
+                    envs:
+                      additionalProperties:
+                        type: string
+                      type: object
+                    name:
+                      type: string
+                  required:
+                  - name
+                  type: object
                 type: array
             type: object
         required:
@@ -281,12 +292,12 @@ rules:
   resources:
   - events
   verbs:
+  - create
   - get
   - list
-  - watch
-  - create
-  - update
   - patch
+  - update
+  - watch
 - apiGroups:
   - ""
   resources:
@@ -489,7 +500,7 @@ spec:
         - --health-probe-bind-address=:8081
         command:
         - /manager
-        image: ghcr.io/abstractprism007/abstractprism/redenvoy:0.0.1
+        image: ghcr.io/abstractprism007/abstractprism/redenvoy:1.0.0
         livenessProbe:
           httpGet:
             path: /healthz

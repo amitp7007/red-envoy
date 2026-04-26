@@ -20,6 +20,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// PodConfig defines the configuration for a managed pod, including its name and environment variables.
+type PodConfig struct {
+	Name string            `json:"name"`
+	Envs map[string]string `json:"envs,omitempty"`
+}
+
 // EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
 
@@ -64,9 +70,9 @@ type RedEnvoyStatus struct {
 	// +listMapKey=type
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
-	// ManagedPods is the list of pod names that are currently being managed by this operator.
+	// ManagedPods is the list of pod configurations that are currently being managed by this operator.
 	// +optional
-	ManagedPods []string `json:"managedPods,omitempty"`
+	ManagedPods []PodConfig `json:"managedPods,omitempty"`
 }
 
 // +kubebuilder:object:root=true

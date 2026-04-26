@@ -18,7 +18,8 @@ package apps
 
 import (
 	"context"
-	redenvoy "red-envoy/api/apps/v1"
+	"encoding/json"
+	redtypes "red-envoy/api/apps/v1"
 
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -41,6 +42,13 @@ import (
 type RedEnvoyReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+}
+
+// EventPayload defines the structure of the message received from the event.
+// It is expected to be a JSON string.
+type EventPayload struct {
+	PodName string            `json:"podName"`
+	Envs    map[string]string `json:"envs,omitempty"`
 }
 
 // +kubebuilder:rbac:groups=apps.abstractprism.com,resources=redenvoys,verbs=get;list;watch;create;update;patch;delete
@@ -70,7 +78,7 @@ func (r *RedEnvoyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	log := logf.FromContext(ctx)
 	log.Info("Reconciling RedEnvoy", "namespace", req.Namespace, "name", req.Name)
 
-	var redenvoy redenvoy.RedEnvoy
+	var redenvoy redtypes.RedEnvoy
 	if err := r.Get(ctx, req.NamespacedName, &redenvoy); err != nil {
 		if errors.IsNotFound(err) {
 			log.Info("RedEnvoy resource not found. Ignoring since object must be deleted.")
@@ -151,8 +159,8 @@ func (r *RedEnvoyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	// --- Garbage Collection ---
 	// Create a map of desired pods for efficient lookup
 	desiredPods := make(map[string]bool)
-	for _, podName := range redenvoy.Status.ManagedPods {
-		desiredPods[podName] = true
+	for _, podConfig := range redenvoy.Status.ManagedPods {
+		desiredPods[podConfig.Name] = true
 	}
 
 	//log.Info("Found pod creation request in annotation", "podName", podNameToCreate)
@@ -225,9 +233,10 @@ func (r *RedEnvoyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 
 	// --- Creation/Update Loop ---
-	for podNameToCreate := range desiredPods {
+	for _, podConfig := range redenvoy.Status.ManagedPods {
+		podNameToCreate := podConfig.Name
 		// Create the pod if it doesn't exist
-		pod := r.podForRedEnvoyApp(&redenvoy, podNameToCreate)
+		pod := r.podForRedEnvoyApp(&redenvoy, podConfig)
 		foundPod := &corev1.Pod{}
 		err := r.Get(ctx, types.NamespacedName{Name: pod.Name, Namespace: pod.Namespace}, foundPod)
 		if err != nil && errors.IsNotFound(err) {
@@ -290,30 +299,41 @@ func (r *RedEnvoyReconciler) mapEventToRequest(ctx context.Context, obj client.O
 		return nil
 	}
 
-	var redenvoy redenvoy.RedEnvoy
+	var redenvoy redtypes.RedEnvoy
 	err := r.Get(ctx, types.NamespacedName{Name: event.InvolvedObject.Name, Namespace: event.InvolvedObject.Namespace}, &redenvoy)
 	if err != nil {
 		log.Error(err, "failed to get involved RedEnvoy from event")
 		return nil
 	}
 
-	// Check if the event reason matches what the RedEnvoy is waiting for.
-	podName := event.Message
+	log.Info("Mapping event to RedEnvoy reconcile request", "eventReason", event.Reason, "redenvoy", redenvoy.Name, "eventMessage", event.Message)
+	// Check if the event reason matches either the creation or deletion trigger
+	// Parse the event message which is expected to be a JSON payload
+	var payload EventPayload
+	if err := json.Unmarshal([]byte(event.Message), &payload); err != nil {
+		log.Error(err, "failed to unmarshal event message into payload", "message", event.Message)
+		return nil
+	}
+	podName := payload.PodName
 	statusNeedsUpdate := false
 
 	// Check for creation event
 	if redenvoy.Spec.TriggeredEventName != "" && redenvoy.Spec.TriggeredEventName == event.Reason {
-		log.Info("Found matching event for RedEnvoy", "redenvoy", redenvoy.Name, "eventReason", event.Reason, "podNameFromMessage", event.Message)
+		log.Info("Found matching event for RedEnvoy", "redenvoy", redenvoy.Name, "eventReason", event.Reason, "podName", podName)
 		// Add to managed pods if not already present
 		found := false
-		for _, name := range redenvoy.Status.ManagedPods {
-			if name == podName {
+		for _, podConfig := range redenvoy.Status.ManagedPods {
+			if podConfig.Name == podName {
 				found = true
 				break
 			}
 		}
 		if !found {
-			redenvoy.Status.ManagedPods = append(redenvoy.Status.ManagedPods, podName)
+			newPodConfig := redtypes.PodConfig{
+				Name: podName,
+				Envs: payload.Envs,
+			}
+			redenvoy.Status.ManagedPods = append(redenvoy.Status.ManagedPods, newPodConfig)
 			statusNeedsUpdate = true
 		}
 	}
@@ -323,10 +343,10 @@ func (r *RedEnvoyReconciler) mapEventToRequest(ctx context.Context, obj client.O
 		log.Info("Found matching deletion event for RedEnvoy", "redenvoy", redenvoy.Name, "podName", podName)
 
 		// Remove from managed pods if present
-		newManagedPods := []string{}
-		for _, name := range redenvoy.Status.ManagedPods {
-			if name != podName {
-				newManagedPods = append(newManagedPods, name)
+		var newManagedPods []redtypes.PodConfig
+		for _, podConfig := range redenvoy.Status.ManagedPods {
+			if podConfig.Name != podName {
+				newManagedPods = append(newManagedPods, podConfig)
 			}
 		}
 		if len(newManagedPods) != len(redenvoy.Status.ManagedPods) {
@@ -343,7 +363,8 @@ func (r *RedEnvoyReconciler) mapEventToRequest(ctx context.Context, obj client.O
 	// The status update will trigger a reconciliation, so we don't need to return a request
 	return nil
 }
-func (r *RedEnvoyReconciler) podForRedEnvoyApp(app *redenvoy.RedEnvoy, podName string) *corev1.Pod {
+func (r *RedEnvoyReconciler) podForRedEnvoyApp(app *redtypes.RedEnvoy, podConfig redtypes.PodConfig) *corev1.Pod {
+	podName := podConfig.Name
 	labels := map[string]string{
 		"app": app.Name,
 		"pod": podName,
@@ -354,13 +375,18 @@ func (r *RedEnvoyReconciler) podForRedEnvoyApp(app *redenvoy.RedEnvoy, podName s
 		containerPort = *app.Spec.ContainerPort
 	}
 
+	var envs []corev1.EnvVar
+	for k, v := range podConfig.Envs {
+		envs = append(envs, corev1.EnvVar{Name: k, Value: v})
+	}
+
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      podName,
 			Namespace: app.Namespace,
 			Labels:    labels,
 			OwnerReferences: []metav1.OwnerReference{
-				*metav1.NewControllerRef(app, redenvoy.GroupVersion.WithKind("RedEnvoy")),
+				*metav1.NewControllerRef(app, redtypes.GroupVersion.WithKind("RedEnvoy")),
 			},
 		},
 		Spec: corev1.PodSpec{
@@ -373,6 +399,7 @@ func (r *RedEnvoyReconciler) podForRedEnvoyApp(app *redenvoy.RedEnvoy, podName s
 							ContainerPort: containerPort,
 						},
 					},
+					Env: envs,
 				},
 			},
 			RestartPolicy: corev1.RestartPolicyOnFailure,
@@ -381,7 +408,7 @@ func (r *RedEnvoyReconciler) podForRedEnvoyApp(app *redenvoy.RedEnvoy, podName s
 }
 
 // serviceForRedEnvoyApp returns a Service object for the given RedEnvoy and pod name
-func (r *RedEnvoyReconciler) serviceForRedEnvoyApp(app *redenvoy.RedEnvoy, podName string) *corev1.Service {
+func (r *RedEnvoyReconciler) serviceForRedEnvoyApp(app *redtypes.RedEnvoy, podName string) *corev1.Service {
 	serviceName := podName // Service name is the same as the pod name
 	labels := map[string]string{"app": app.Name}
 	selector := map[string]string{
@@ -400,7 +427,7 @@ func (r *RedEnvoyReconciler) serviceForRedEnvoyApp(app *redenvoy.RedEnvoy, podNa
 			Namespace: app.Namespace,
 			Labels:    labels,
 			OwnerReferences: []metav1.OwnerReference{
-				*metav1.NewControllerRef(app, redenvoy.GroupVersion.WithKind("RedEnvoy")),
+				*metav1.NewControllerRef(app, redtypes.GroupVersion.WithKind("RedEnvoy")),
 			},
 		},
 		Spec: corev1.ServiceSpec{
@@ -418,7 +445,7 @@ func (r *RedEnvoyReconciler) serviceForRedEnvoyApp(app *redenvoy.RedEnvoy, podNa
 }
 
 // ingressForRedEnvoyApp returns an Ingress object for the given RedEnvoy and pod name
-func (r *RedEnvoyReconciler) ingressForRedEnvoyApp(app *redenvoy.RedEnvoy, podName string) *networkingv1.Ingress {
+func (r *RedEnvoyReconciler) ingressForRedEnvoyApp(app *redtypes.RedEnvoy, podName string) *networkingv1.Ingress {
 	ingressName := podName // Ingress name is the same as the pod name
 	serviceName := podName
 	path := "/" + podName
@@ -431,7 +458,7 @@ func (r *RedEnvoyReconciler) ingressForRedEnvoyApp(app *redenvoy.RedEnvoy, podNa
 			Namespace: app.Namespace,
 			Labels:    labels,
 			OwnerReferences: []metav1.OwnerReference{
-				*metav1.NewControllerRef(app, redenvoy.GroupVersion.WithKind("RedEnvoy")),
+				*metav1.NewControllerRef(app, redtypes.GroupVersion.WithKind("RedEnvoy")),
 			},
 			Annotations: map[string]string{
 				"nginx.ingress.kubernetes.io/rewrite-target": "/",
@@ -465,25 +492,25 @@ func (r *RedEnvoyReconciler) ingressForRedEnvoyApp(app *redenvoy.RedEnvoy, podNa
 	}
 }
 
-func (r *RedEnvoyReconciler) serviceAccountForWebServer(app *redenvoy.RedEnvoy) *corev1.ServiceAccount {
+func (r *RedEnvoyReconciler) serviceAccountForWebServer(app *redtypes.RedEnvoy) *corev1.ServiceAccount {
 	return &corev1.ServiceAccount{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      app.Name + "-operator-webhook",
 			Namespace: app.Namespace,
 			OwnerReferences: []metav1.OwnerReference{
-				*metav1.NewControllerRef(app, redenvoy.GroupVersion.WithKind("RedEnvoy")),
+				*metav1.NewControllerRef(app, redtypes.GroupVersion.WithKind("RedEnvoy")),
 			},
 		},
 	}
 }
 
-func (r *RedEnvoyReconciler) roleForWebServer(app *redenvoy.RedEnvoy) *rbacv1.Role {
+func (r *RedEnvoyReconciler) roleForWebServer(app *redtypes.RedEnvoy) *rbacv1.Role {
 	return &rbacv1.Role{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      app.Name + "-operator-webhook-role",
 			Namespace: app.Namespace,
 			OwnerReferences: []metav1.OwnerReference{
-				*metav1.NewControllerRef(app, redenvoy.GroupVersion.WithKind("RedEnvoy")),
+				*metav1.NewControllerRef(app, redtypes.GroupVersion.WithKind("RedEnvoy")),
 			},
 		},
 		Rules: []rbacv1.PolicyRule{
@@ -496,13 +523,13 @@ func (r *RedEnvoyReconciler) roleForWebServer(app *redenvoy.RedEnvoy) *rbacv1.Ro
 	}
 }
 
-func (r *RedEnvoyReconciler) roleBindingForWebServer(app *redenvoy.RedEnvoy) *rbacv1.RoleBinding {
+func (r *RedEnvoyReconciler) roleBindingForWebServer(app *redtypes.RedEnvoy) *rbacv1.RoleBinding {
 	return &rbacv1.RoleBinding{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      app.Name + "-operator-webhook-rolebinding",
 			Namespace: app.Namespace,
 			OwnerReferences: []metav1.OwnerReference{
-				*metav1.NewControllerRef(app, redenvoy.GroupVersion.WithKind("RedEnvoy")),
+				*metav1.NewControllerRef(app, redtypes.GroupVersion.WithKind("RedEnvoy")),
 			},
 		},
 		Subjects: []rbacv1.Subject{
@@ -520,7 +547,7 @@ func (r *RedEnvoyReconciler) roleBindingForWebServer(app *redenvoy.RedEnvoy) *rb
 	}
 }
 
-func (r *RedEnvoyReconciler) deploymentForWebServer(app *redenvoy.RedEnvoy) *appsv1.Deployment {
+func (r *RedEnvoyReconciler) deploymentForWebServer(app *redtypes.RedEnvoy) *appsv1.Deployment {
 	labels := map[string]string{"app": app.Name, "component": "operator-webhook"}
 	replicas := int32(1)
 
@@ -530,7 +557,7 @@ func (r *RedEnvoyReconciler) deploymentForWebServer(app *redenvoy.RedEnvoy) *app
 			Namespace: app.Namespace,
 			Labels:    labels,
 			OwnerReferences: []metav1.OwnerReference{
-				*metav1.NewControllerRef(app, redenvoy.GroupVersion.WithKind("RedEnvoy")),
+				*metav1.NewControllerRef(app, redtypes.GroupVersion.WithKind("RedEnvoy")),
 			},
 		},
 		Spec: appsv1.DeploymentSpec{
@@ -556,7 +583,7 @@ func (r *RedEnvoyReconciler) deploymentForWebServer(app *redenvoy.RedEnvoy) *app
 
 // serviceForWebServer returns a Service object for the webhook server
 
-func (r *RedEnvoyReconciler) serviceForWebServer(app *redenvoy.RedEnvoy) *corev1.Service {
+func (r *RedEnvoyReconciler) serviceForWebServer(app *redtypes.RedEnvoy) *corev1.Service {
 	labels := map[string]string{"app": app.Name, "component": "operator-webhook"}
 	return &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
@@ -564,7 +591,7 @@ func (r *RedEnvoyReconciler) serviceForWebServer(app *redenvoy.RedEnvoy) *corev1
 			Namespace: app.Namespace,
 			Labels:    labels,
 			OwnerReferences: []metav1.OwnerReference{
-				*metav1.NewControllerRef(app, redenvoy.GroupVersion.WithKind("RedEnvoy")),
+				*metav1.NewControllerRef(app, redtypes.GroupVersion.WithKind("RedEnvoy")),
 			},
 		},
 		Spec: corev1.ServiceSpec{
@@ -584,7 +611,7 @@ func (r *RedEnvoyReconciler) serviceForWebServer(app *redenvoy.RedEnvoy) *corev1
 // SetupWithManager sets up the controller with the Manager.
 func (r *RedEnvoyReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&redenvoy.RedEnvoy{}).
+		For(&redtypes.RedEnvoy{}).
 		Named("apps-redenvoy").
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
