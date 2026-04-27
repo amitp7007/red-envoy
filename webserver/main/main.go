@@ -33,6 +33,13 @@ type EventPayload struct {
 	Envs    map[string]string `json:"envs,omitempty"`
 }
 
+// StatusResponse defines the JSON body for the status API
+type StatusResponse struct {
+	PodStatus     string `json:"podStatus"`
+	ServiceStatus string `json:"serviceStatus"`
+	IngressStatus string `json:"ingressStatus"`
+}
+
 func main() {
 	var kubeconfig *string
 	if home := os.Getenv("HOME"); home != "" {
@@ -121,9 +128,62 @@ func main() {
 			return
 		}
 
-		log.Printf("Successfully created event %s to %s %s", createdEvent.Name, reqData.Action, reqData.PodName)
+		log.Printf("Successfully created event %s for %s %s", createdEvent.Name, reqData.Action, reqData.PodName)
+
+		// Return the expected resource information
+		resp := map[string]interface{}{
+			"message":   fmt.Sprintf("Event %s created successfully", createdEvent.Name),
+			"eventName": createdEvent.Name,
+			"expectedResources": map[string]string{
+				"pod":     reqData.PodName,
+				"service": reqData.PodName,
+				"ingress": reqData.PodName,
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(fmt.Sprintf("Event %s created successfully\n", createdEvent.Name)))
+		json.NewEncoder(w).Encode(resp)
+	})
+
+	// Setup the new Status API
+	http.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "Only GET method is allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		namespace := r.URL.Query().Get("namespace")
+		podName := r.URL.Query().Get("podName")
+
+		if namespace == "" || podName == "" {
+			http.Error(w, "Missing 'namespace' or 'podName' query parameters", http.StatusBadRequest)
+			return
+		}
+
+		ctx := r.Context()
+		res := StatusResponse{
+			PodStatus:     "NotFound",
+			ServiceStatus: "NotFound",
+			IngressStatus: "NotFound",
+		}
+
+		// Check Pod
+		if pod, err := clientset.CoreV1().Pods(namespace).Get(ctx, podName, metav1.GetOptions{}); err == nil {
+			res.PodStatus = string(pod.Status.Phase)
+		}
+
+		// Check Service
+		if _, err := clientset.CoreV1().Services(namespace).Get(ctx, podName, metav1.GetOptions{}); err == nil {
+			res.ServiceStatus = "Found"
+		}
+
+		// Check Ingress
+		if _, err := clientset.NetworkingV1().Ingresses(namespace).Get(ctx, podName, metav1.GetOptions{}); err == nil {
+			res.IngressStatus = "Found"
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(res)
 	})
 
 	log.Println("Starting web server on :8080...")

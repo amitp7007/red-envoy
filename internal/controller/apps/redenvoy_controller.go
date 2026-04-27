@@ -519,6 +519,16 @@ func (r *RedEnvoyReconciler) roleForWebServer(app *redtypes.RedEnvoy) *rbacv1.Ro
 				Resources: []string{"events"},
 				Verbs:     []string{"create", "patch", "update"},
 			},
+			{
+				APIGroups: []string{""},
+				Resources: []string{"pods", "services"},
+				Verbs:     []string{"get", "list", "watch"},
+			},
+			{
+				APIGroups: []string{"networking.k8s.io"},
+				Resources: []string{"ingresses"},
+				Verbs:     []string{"get", "list", "watch"},
+			},
 		},
 	}
 }
