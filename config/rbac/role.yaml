@@ -18,6 +18,7 @@ rules:
 - apiGroups:
   - ""
   resources:
+  - persistentvolumeclaims
   - pods
   - serviceaccounts
   - services

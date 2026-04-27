@@ -29,6 +29,7 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -63,6 +64,7 @@ type EventPayload struct {
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=get;list;watch;create;update;patch;delete;bind
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
@@ -163,6 +165,22 @@ func (r *RedEnvoyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		desiredPods[podConfig.Name] = true
 	}
 
+	// List and check PVCs
+	var pvcList corev1.PersistentVolumeClaimList
+	if err := r.List(ctx, &pvcList, client.InNamespace(req.Namespace), client.MatchingLabels{"app": redenvoy.Name}); err != nil {
+		log.Error(err, "unable to list child PVCs")
+		return ctrl.Result{}, err
+	}
+	for _, pvc := range pvcList.Items {
+		if _, shouldExist := desiredPods[pvc.Name]; !shouldExist {
+			log.Info("Deleting orphaned PVC", "PVC.Namespace", pvc.Namespace, "PVC.Name", pvc.Name)
+			if err := r.Delete(ctx, &pvc); err != nil {
+				log.Error(err, "unable to delete orphaned PVC")
+				return ctrl.Result{}, err
+			}
+		}
+	}
+
 	//log.Info("Found pod creation request in annotation", "podName", podNameToCreate)
 	// List and check Pods
 	var podList corev1.PodList
@@ -235,12 +253,28 @@ func (r *RedEnvoyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	// --- Creation/Update Loop ---
 	for _, podConfig := range redenvoy.Status.ManagedPods {
 		podNameToCreate := podConfig.Name
+
+		// Create the PVC if it doesn't exist
+		pvc := r.pvcForRedEnvoyApp(&redenvoy, podNameToCreate)
+		foundPVC := &corev1.PersistentVolumeClaim{}
+		errPvc := r.Get(ctx, types.NamespacedName{Name: pvc.Name, Namespace: pvc.Namespace}, foundPVC)
+		if errPvc != nil && errors.IsNotFound(errPvc) {
+			log.Info("Creating a new PVC", "PVC.Namespace", pvc.Namespace, "PVC Name", pvc.Name)
+			if err := r.Create(ctx, pvc); err != nil {
+				log.Error(err, "unable to create PVC")
+				return ctrl.Result{}, err
+			}
+		} else if errPvc != nil {
+			log.Error(errPvc, "failed to get PVC")
+			return ctrl.Result{}, errPvc
+		}
+
 		// Create the pod if it doesn't exist
 		pod := r.podForRedEnvoyApp(&redenvoy, podConfig)
 		foundPod := &corev1.Pod{}
 		err := r.Get(ctx, types.NamespacedName{Name: pod.Name, Namespace: pod.Namespace}, foundPod)
 		if err != nil && errors.IsNotFound(err) {
-			log.Info("Creating a new Pod", "Pod.Namespace", pod.Namespace, "Pod.Name", pod.Name)
+			log.Info("Creating a new Pod", "Pod.Namespace", pod.Namespace, "Pod Name", pod.Name)
 			if err := r.Create(ctx, pod); err != nil {
 				log.Error(err, "unable to create Pod")
 				return ctrl.Result{}, err
@@ -400,6 +434,22 @@ func (r *RedEnvoyReconciler) podForRedEnvoyApp(app *redtypes.RedEnvoy, podConfig
 						},
 					},
 					Env: envs,
+					VolumeMounts: []corev1.VolumeMount{
+						{
+							Name:      "data",
+							MountPath: "/data", // Default Node-RED data directory
+						},
+					},
+				},
+			},
+			Volumes: []corev1.Volume{
+				{
+					Name: "data",
+					VolumeSource: corev1.VolumeSource{
+						PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+							ClaimName: podName,
+						},
+					},
 				},
 			},
 			RestartPolicy: corev1.RestartPolicyOnFailure,
@@ -440,6 +490,33 @@ func (r *RedEnvoyReconciler) serviceForRedEnvoyApp(app *redtypes.RedEnvoy, podNa
 				},
 			},
 			Type: corev1.ServiceTypeClusterIP,
+		},
+	}
+}
+
+// pvcForRedEnvoyApp returns a PersistentVolumeClaim object for the given RedEnvoy and pod name
+func (r *RedEnvoyReconciler) pvcForRedEnvoyApp(app *redtypes.RedEnvoy, podName string) *corev1.PersistentVolumeClaim {
+	labels := map[string]string{
+		"app": app.Name,
+		"pod": podName,
+	}
+
+	return &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      podName,
+			Namespace: app.Namespace,
+			Labels:    labels,
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(app, redtypes.GroupVersion.WithKind("RedEnvoy")),
+			},
+		},
+		Spec: corev1.PersistentVolumeClaimSpec{
+			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+			Resources: corev1.VolumeResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceStorage: resource.MustParse("1Gi"),
+				},
+			},
 		},
 	}
 }
@@ -627,6 +704,7 @@ func (r *RedEnvoyReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.Service{}).
 		Owns(&corev1.Pod{}).
 		Owns(&networkingv1.Ingress{}).
+		Owns(&corev1.PersistentVolumeClaim{}).
 		Watches(
 			&corev1.Event{},
 			//&source.Kind{Type: &corev1.Event{}},
